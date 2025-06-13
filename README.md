@@ -98,6 +98,49 @@
         .modal-menu-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 15px; margin-top: 15px; }
         .profile-data-item { text-align: left; margin-bottom: 12px; font-size: 14px; }
         .profile-data-item strong { color: #2c3e50; }
+        /* CSS untuk leaderboard */
+        .leaderboard-list {
+            list-style: none;
+            padding: 0;
+            margin: 0;
+            text-align: left;
+        }
+        .leaderboard-item {
+            display: flex;
+            align-items: center;
+            padding: 12px;
+            margin-bottom: 8px;
+            background: #f0f8ff; /* Light blue background */
+            border-radius: 10px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.05);
+            transition: transform 0.2s ease;
+        }
+        .leaderboard-item:hover {
+            transform: translateY(-2px);
+        }
+        .leaderboard-rank {
+            font-size: 18px;
+            font-weight: bold;
+            color: #2ecc71; /* Green for rank */
+            width: 30px;
+            text-align: center;
+            margin-right: 15px;
+        }
+        .leaderboard-name {
+            font-weight: 600;
+            color: #333;
+            flex-grow: 1;
+        }
+        .leaderboard-value {
+            font-weight: bold;
+            color: #f39c12; /* Orange for value */
+        }
+        .leaderboard-note {
+            font-size: 12px;
+            color: #7f8c8d;
+            text-align: center;
+            margin-top: 15px;
+        }
     </style>
 </head>
 <body>
@@ -127,8 +170,8 @@
                 <div class="balance-amount" id="balance">Rp 0</div>
                 <div class="balance-actions">
                     <button class="balance-btn" onclick="showTransfer()">💸 Transfer</button>
-                    <button class="balance-btn" onclick="showRincianSaldo()">🧾 Rincian Saldo</button>
-                    <button class="balance-btn" onclick="showIsiSaldo()">➕ Cara Isi Saldo</button>
+                    <button class="balance-btn" onclick="showSetorSampah()">🗑️ Setor Sampah</button>
+                    <button class="balance-btn" onclick="showTarikSaldo()"> 💵 Tarik Saldo</button>
                 </div>
             </div>
         </div>
@@ -185,7 +228,7 @@
     import { initializeApp } from "https://www.gstatic.com/firebasejs/9.22.1/firebase-app.js";
     import { getAnalytics } from "https://www.gstatic.com/firebasejs/9.22.1/firebase-analytics.js";
     import { getAuth, onAuthStateChanged, createUserWithEmailAndPassword, signInWithEmailAndPassword, signOut, sendPasswordResetEmail } from "https://www.gstatic.com/firebasejs/9.22.1/firebase-auth.js";
-    import { getFirestore, doc, setDoc, getDoc, serverTimestamp } from "https://www.gstatic.com/firebasejs/9.22.1/firebase-firestore.js";
+    import { getFirestore, doc, setDoc, updateDoc, arrayUnion, serverTimestamp, onSnapshot, collection, query, orderBy, limit, getDocs } from "https://www.gstatic.com/firebasejs/9.22.1/firebase-firestore.js"; 
 
     const firebaseConfig = {
       apiKey: "AIzaSyCxAYtwTyqgal3LkMmoO7k2AZG4PbSKTnY",
@@ -207,8 +250,18 @@
     // STATE MANAGEMENT & DATA GLOBAL
     // ====================================================================
     let currentUserData = null; // Akan diisi dengan data pengguna yang login
+    let unsubscribeFromUserData = null; // Untuk menyimpan fungsi unsubscribe onSnapshot
+
     const staticData = {
-        wastePrices: { "Botol Plastik": 2500, "Kardus": 2000, "Kertas": 1500, "Logam": 5000, "Kaca": 500, "Campuran": 2000, },
+        wastePrices: {
+            "Botol Plastik": 2500,
+            "Kardus": 2000,
+            "Kertas": 1500,
+            "Logam": 5000,
+            "Kaca": 500,
+            "Campuran": 2000,
+        },
+        pointsPerKg: 100, // Poin yang didapat per kg sampah
         rewards: [
             { id: 'pulsa10k', name: 'Pulsa 10rb', cost: 11000, icon: '📱' },
             { id: 'minyak1l', name: 'Minyak Goreng 1L', cost: 25000, icon: '🍳' },
@@ -224,19 +277,43 @@
     // FUNGSI UTAMA & AUTHENTICATION
     // ====================================================================
     onAuthStateChanged(auth, async (user) => {
+        // Unsubscribe dari listener sebelumnya jika ada
+        if (unsubscribeFromUserData) {
+            unsubscribeFromUserData();
+            unsubscribeFromUserData = null;
+        }
+
         if (user) {
-            // Pengguna sedang login
             const userDocRef = doc(db, "users", user.uid);
-            const userDocSnap = await getDoc(userDocRef);
-            if (userDocSnap.exists()) {
-                currentUserData = { uid: user.uid, email: user.email, ...userDocSnap.data() };
-            } else {
-                // Dokumen tidak ditemukan, mungkin pengguna baru atau data error
-                currentUserData = { uid: user.uid, email: user.email, ...staticData.guestData, name: "Pengguna Baru" };
-            }
-            console.log("User logged in:", currentUserData.name);
-            updateUIForAuthState(true);
-            renderDashboard(currentUserData);
+            
+            // Atur listener real-time untuk dokumen pengguna
+            unsubscribeFromUserData = onSnapshot(userDocRef, (docSnap) => {
+                if (docSnap.exists()) {
+                    currentUserData = { uid: user.uid, email: user.email, ...docSnap.data() };
+                    // Pastikan transaksi adalah array dan ada timestamp
+                    currentUserData.transactions = currentUserData.transactions || [];
+                    // Konversi Timestamp Firestore ke Date jika perlu (untuk rendering)
+                    currentUserData.transactions.forEach(tx => {
+                        if (tx.timestamp && tx.timestamp.toDate) {
+                            tx.date = formatDate(tx.timestamp.toDate());
+                        }
+                    });
+                    console.log("User data updated:", currentUserData.name);
+                    renderDashboard(currentUserData); // Render ulang dashboard dengan data terbaru
+                    updateUIForAuthState(true);
+                } else {
+                    // Dokumen tidak ditemukan, mungkin pengguna baru atau data error
+                    // Coba buat dokumen default jika belum ada
+                    initializeNewUserDocument(user);
+                }
+            }, (error) => {
+                console.error("Error listening to user data:", error);
+                alert("Gagal memuat data pengguna: " + error.message);
+                // Fallback ke data tamu jika ada masalah
+                currentUserData = null;
+                updateUIForAuthState(false);
+                renderDashboard(staticData.guestData);
+            });
         } else {
             // Pengguna logout
             currentUserData = null;
@@ -245,6 +322,31 @@
             renderDashboard(staticData.guestData);
         }
     });
+
+    async function initializeNewUserDocument(user) {
+        const userDocRef = doc(db, "users", user.uid);
+        try {
+            await setDoc(userDocRef, {
+                name: user.email.split('@')[0] || "Pengguna Baru",
+                email: user.email,
+                birthdate: null,
+                address: null,
+                role: 'member',
+                balance: 0,
+                points: 0,
+                activeDays: 0,
+                totalWasteKg: 0,
+                transactions: [],
+                createdAt: serverTimestamp(),
+                lastActiveDate: null // Tambahkan field ini
+            }, { merge: true }); // Gunakan merge true agar tidak menimpa jika sudah ada sebagian
+            console.log("New user document (or merged) initialized for:", user.email);
+            // onSnapshot akan menangani update currentUserData dan renderDashboard setelah ini
+        } catch (error) {
+            console.error("Error initializing new user document:", error);
+            alert("Gagal menginisialisasi data pengguna baru: " + error.message);
+        }
+    }
 
     function updateUIForAuthState(isLoggedIn) {
         const authNavItem = document.getElementById('auth-nav-item');
@@ -280,30 +382,65 @@
     // ====================================================================
     function renderDashboard(data) {
         document.getElementById('user-name').textContent = data.name;
-        document.getElementById('user-days').textContent = data.activeDays || '-';
-        document.getElementById('user-waste').textContent = `${data.totalWasteKg || 0}kg`;
+        document.getElementById('user-days').textContent = data.activeDays || 0;
+        document.getElementById('user-waste').textContent = `${(data.totalWasteKg || 0).toLocaleString('id-ID', { maximumFractionDigits: 2 })}kg`;
         document.getElementById('balance').textContent = `Rp ${(data.balance || 0).toLocaleString('id-ID')}`;
         
         const transactionList = document.getElementById('transaction-list');
         transactionList.innerHTML = '';
         if (data.transactions && data.transactions.length > 0) {
-            data.transactions.forEach(tx => {
-                const amountClass = tx.type;
-                const amountSign = tx.amount > 0 ? '+' : '';
-                const icon = tx.type === 'setor' ? '📥' : (tx.type === 'tarik' ? '📤' : '🎁');
-                const txItemHTML = `<div class="transaction-item ${tx.type}"><div class="transaction-icon ${tx.type}">${icon}</div><div class="transaction-info"><div class="transaction-title">${tx.title}</div><div class="transaction-detail">${tx.detail}</div><div class="transaction-date">${tx.date}</div></div><div class="transaction-amount ${amountClass}">${amountSign}Rp ${Math.abs(tx.amount).toLocaleString('id-ID')}</div></div>`;
-                transactionList.insertAdjacentHTML('beforeend', txItemHTML);
+            // Urutkan transaksi berdasarkan timestamp terbaru
+            const sortedTransactions = [...data.transactions].sort((a, b) => {
+                const dateA = a.timestamp && a.timestamp.toDate ? a.timestamp.toDate() : new Date(a.date);
+                const dateB = b.timestamp && b.timestamp.toDate ? b.timestamp.toDate() : new Date(b.date);
+                return dateB.getTime() - dateA.getTime(); // Bandingkan nilai milidetik
             });
+
+            // Tampilkan hanya 5 transaksi terbaru di dashboard
+            const recentTransactions = sortedTransactions.slice(0, 5); 
+
+            if (recentTransactions.length > 0) {
+                recentTransactions.forEach(tx => {
+                    const amountClass = tx.type;
+                    const amountSign = tx.amount > 0 ? '+' : '';
+                    const icon = tx.type === 'setor' ? '📥' : (tx.type === 'tarik' ? '📤' : '🎁');
+                    const displayAmount = Math.abs(tx.amount).toLocaleString('id-ID');
+                    const displayDate = tx.timestamp && tx.timestamp.toDate ? formatDate(tx.timestamp.toDate()) : tx.date; 
+                    
+                    const txItemHTML = `<div class="transaction-item ${tx.type}"><div class="transaction-icon ${tx.type}">${icon}</div><div class="transaction-info"><div class="transaction-title">${tx.title}</div><div class="transaction-detail">${tx.detail}</div><div class="transaction-date">${displayDate}</div></div><div class="transaction-amount ${amountClass}">${amountSign}Rp ${displayAmount}</div></div>`;
+                    transactionList.insertAdjacentHTML('beforeend', txItemHTML);
+                });
+            } else {
+                transactionList.innerHTML = '<p style="text-align:center; color:#999;">Belum ada transaksi terbaru.</p>';
+            }
         } else if (currentUserData) {
             transactionList.innerHTML = '<p style="text-align:center; color:#999;">Belum ada transaksi.</p>';
         }
 
         const wasteTypeSelect = document.getElementById('wasteTypeCalc');
-        if (wasteTypeSelect.options.length <= 1) { // Hanya isi jika belum ada
-            for (const [name, price] of Object.entries(staticData.wastePrices)) {
-                wasteTypeSelect.insertAdjacentHTML('beforeend', `<option value="${name}" data-price="${price}">${name} (Rp ${price.toLocaleString('id-ID')}/kg)</option>`);
-            }
+        // Clear existing options except the first one
+        while (wasteTypeSelect.options.length > 1) {
+            wasteTypeSelect.remove(1);
         }
+        for (const [name, price] of Object.entries(staticData.wastePrices)) {
+            wasteTypeSelect.insertAdjacentHTML('beforeend', `<option value="${name}" data-price="${price}">${name} (Rp ${price.toLocaleString('id-ID')}/kg)</option>`);
+        }
+    }
+
+    // Helper function for date formatting
+    function formatDate(date) {
+        if (!(date instanceof Date)) { // Fallback if it's not a Date object
+            date = new Date(date);
+        }
+        const options = { year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' };
+        return date.toLocaleDateString('id-ID', options);
+    }
+    
+    // Helper function to check if two dates are the same day (ignoring time)
+    function isSameDay(d1, d2) {
+        return d1.getFullYear() === d2.getFullYear() &&
+               d1.getMonth() === d2.getMonth() &&
+               d1.getDate() === d2.getDate();
     }
 
     // ====================================================================
@@ -338,10 +475,11 @@
                 </div>
                 <button class="modal-btn" onclick="handleLogin()">Login</button>
                 <button class="modal-btn secondary" onclick="showRegistrationForm()">Belum punya akun? Daftar</button>
+                <a href="#" class="modal-link" onclick="showResetPassword()">Lupa password?</a>
             </div>
         `;
         showModal('🔑', 'Login Pengguna', formHTML);
-        modalBtn.style.display = 'none';
+        modalBtn.style.display = 'none'; // Hide default close button
     }
 
     window.handleLogin = () => {
@@ -353,6 +491,7 @@
         }
         signInWithEmailAndPassword(auth, email, password)
             .then((userCredential) => {
+                // onAuthStateChanged will handle UI and data updates
                 closeModal();
                 alert(`Selamat datang kembali!`);
             })
@@ -376,11 +515,11 @@
                     <button class="password-toggle" onclick="togglePasswordVisibility('regPassword')">👁️</button>
                 </div>
                 
-                <label for="regBirthdate">Tanggal Lahir</label>
-                <input type="date" id="regBirthdate" required>
+                <label for="regBirthdate">Tanggal Lahir (Opsional)</label>
+                <input type="date" id="regBirthdate">
                 
-                <label for="regAddress">Alamat</label>
-                <input type="text" id="regAddress" placeholder="Contoh: Dusun Citambal RT 01/RW 01" required>
+                <label for="regAddress">Alamat (Opsional)</label>
+                <input type="text" id="regAddress" placeholder="Contoh: Dusun Citambal RT 01/RW 01">
                 
                 <button class="modal-btn" onclick="handleRegistration()">Daftar Sekarang</button>
                 <button class="modal-btn secondary" onclick="showLoginForm()">Sudah punya akun? Login</button>
@@ -397,8 +536,12 @@
         const birthdate = document.getElementById('regBirthdate').value;
         const address = document.getElementById('regAddress').value;
 
-        if (!name || !email || !password || !birthdate || !address) {
-            alert("Semua kolom wajib diisi!");
+        if (!name || !email || !password) {
+            alert("Nama, Email, dan Password wajib diisi!");
+            return;
+        }
+        if (password.length < 6) {
+            alert("Password minimal 6 karakter.");
             return;
         }
 
@@ -409,18 +552,20 @@
                 await setDoc(doc(db, "users", user.uid), {
                     name: name,
                     email: email,
-                    birthdate: birthdate,
-                    address: address,
+                    birthdate: birthdate || null,
+                    address: address || null,
                     role: 'member',
                     balance: 0,
                     points: 0,
                     activeDays: 0,
                     totalWasteKg: 0,
                     transactions: [],
-                    createdAt: serverTimestamp()
+                    createdAt: serverTimestamp(),
+                    lastActiveDate: null // Inisialisasi lastActiveDate
                 });
                 closeModal();
                 alert("Pendaftaran berhasil! Anda akan otomatis login.");
+                // onAuthStateChanged akan menangani update UI dan data setelah ini
             })
             .catch((error) => {
                 alert("Pendaftaran Gagal: " + error.message);
@@ -433,29 +578,46 @@
             return;
         }
         const profileHTML = `
-            <div class="profile-data-item"><strong>Nama:</strong> ${currentUserData.name}</div>
-            <div class="profile-data-item"><strong>Email:</strong> ${currentUserData.email}</div>
-            <div class="profile-data-item"><strong>Tgl Lahir:</strong> ${currentUserData.birthdate}</div>
-            <div class="profile-data-item"><strong>Alamat:</strong> ${currentUserData.address}</div>
-            <button class="modal-btn secondary" onclick="handleChangePassword()" style="margin-top: 20px;">Ganti Password</button>
+            <div class="profile-data-item"><strong>Nama:</strong> ${currentUserData.name || '-'}</div>
+            <div class="profile-data-item"><strong>Email:</strong> ${currentUserData.email || '-'}</div>
+            <div class="profile-data-item"><strong>Tgl Lahir:</strong> ${currentUserData.birthdate || '-'}</div>
+            <div class="profile-data-item"><strong>Alamat:</strong> ${currentUserData.address || '-'}</div>
+            <button class="modal-btn secondary" onclick="showResetPassword()" style="margin-top: 20px;">Ganti Password</button>
         `;
         showModal('👤', 'Profil Pengguna', profileHTML);
     }
     
-    window.handleChangePassword = () => {
-        if (!currentUserData) return;
-        sendPasswordResetEmail(auth, currentUserData.email)
+    window.showResetPassword = () => {
+        const email = currentUserData ? currentUserData.email : '';
+        const formHTML = `
+            <div class="modal-form">
+                <label for="resetEmail">Email Anda</label>
+                <input type="email" id="resetEmail" value="${email}" placeholder="Masukkan email terdaftar" required>
+                <button class="modal-btn" onclick="handleResetPassword()">Kirim Link Reset Password</button>
+            </div>
+        `;
+        showModal('🔑', 'Reset Password', formHTML, 'Kembali', showLoginForm);
+        modalBtn.style.display = 'block'; // Ensure button is visible for 'Kembali'
+    };
+
+    window.handleResetPassword = () => {
+        const email = document.getElementById('resetEmail').value;
+        if (!email) {
+            alert("Email harus diisi.");
+            return;
+        }
+        sendPasswordResetEmail(auth, email)
             .then(() => {
-                alert(`Email untuk reset password telah dikirim ke ${currentUserData.email}. Silakan cek kotak masuk Anda.`);
+                alert(`Email untuk reset password telah dikirim ke ${email}. Silakan cek kotak masuk Anda.`);
+                closeModal();
             })
             .catch((error) => {
                 alert("Gagal mengirim email: " + error.message);
             });
     };
 
-
     // ====================================================================
-    // FUNGSI FITUR-FITUR BARU
+    // FUNGSI FITUR-FITUR BARU & INTERAKSI DATA
     // ====================================================================
 
     window.showEventAndReward = () => {
@@ -521,10 +683,14 @@
     };
     
     // ====================================================================
-    // FUNGSI LAINNYA (Telah Disesuaikan)
+    // FUNGSI TRANSAKSI & POIN (Implementasi Nyata)
     // ====================================================================
+
     window.showTukarPoin = () => {
-        if (!currentUserData) { alert("Silakan login untuk menukar poin."); return; }
+        if (!currentUserData) { 
+            showModal('⚠️', 'Akses Ditolak', '<p class="modal-text">Silakan login untuk menukar poin Anda.</p>');
+            return; 
+        }
         
         let rewardItemsHTML = '';
         staticData.rewards.forEach(reward => {
@@ -532,14 +698,250 @@
             rewardItemsHTML += `<div class="reward-item"><div class="reward-item-icon">${reward.icon}</div><div class="reward-item-info"><div class="reward-item-name">${reward.name}</div><div class="reward-item-cost">${reward.cost.toLocaleString('id-ID')} Poin</div></div><button class="reward-item-btn" onclick="processRedeem('${reward.id}')" ${!canRedeem ? 'disabled' : ''}>Tukar</button></div>`;
         });
 
-        const tukarPoinHTML = `<div class="points-balance">Poin Anda Saat Ini: <br> <span id="current-points">${currentUserData.points.toLocaleString('id-ID')} Poin</span></div><div class="reward-list">${rewardItemsHTML}</div>`;
+        const tukarPoinHTML = `<div class="points-balance">Poin Anda Saat Ini: <br> <span id="current-points">${(currentUserData.points || 0).toLocaleString('id-ID')} Poin</span></div><div class="reward-list">${rewardItemsHTML}</div>`;
         showModal('🎁', 'Tukar Poin Reward', tukarPoinHTML, 'Selesai');
     }
 
-    window.processRedeem = (rewardId) => {
-        // Logika ini perlu diintegrasikan dengan update data ke Firestore nantinya
-        alert("Fitur penukaran poin sedang dalam pengembangan untuk terhubung ke database.");
+    window.processRedeem = async (rewardId) => {
+        if (!currentUserData) {
+            alert("Anda harus login untuk menukar poin.");
+            return;
+        }
+
+        const reward = staticData.rewards.find(r => r.id === rewardId);
+        if (!reward) {
+            alert("Reward tidak ditemukan.");
+            return;
+        }
+
+        if (currentUserData.points < reward.cost) {
+            alert("Poin Anda tidak cukup untuk menukar reward ini.");
+            return;
+        }
+
+        if (!confirm(`Apakah Anda yakin ingin menukar ${reward.cost.toLocaleString('id-ID')} Poin untuk ${reward.name}?`)) {
+            return;
+        }
+
+        try {
+            const userDocRef = doc(db, "users", currentUserData.uid);
+            
+            // Update activeDays logic
+            let newActiveDays = currentUserData.activeDays || 0;
+            let lastActiveDate = currentUserData.lastActiveDate ? currentUserData.lastActiveDate.toDate() : null;
+            const today = new Date();
+            if (!lastActiveDate || !isSameDay(lastActiveDate, today)) {
+                newActiveDays++;
+            }
+
+            const newTransaction = {
+                type: 'reward',
+                title: `Penukaran Poin: ${reward.name}`,
+                detail: `Poin berkurang ${reward.cost.toLocaleString('id-ID')}`,
+                amount: -reward.cost, // Menggunakan amount negatif untuk penarikan/pengurangan
+                timestamp: serverTimestamp(),
+            };
+
+            await updateDoc(userDocRef, {
+                points: currentUserData.points - reward.cost,
+                transactions: arrayUnion(newTransaction),
+                activeDays: newActiveDays,
+                lastActiveDate: serverTimestamp() // Update last active date to now
+            });
+            
+            alert(`Berhasil menukar ${reward.name}!`);
+            closeModal();
+            // onSnapshot akan menangani update UI
+        } catch (error) {
+            console.error("Error redeeming points:", error);
+            alert("Gagal menukar poin: " + error.message);
+        }
     }
+
+    window.showSetorSampah = () => {
+        if (!currentUserData) { 
+            showModal('⚠️', 'Akses Ditolak', '<p class="modal-text">Silakan login untuk mencatat setoran sampah Anda.</p>');
+            return; 
+        }
+
+        let wasteOptions = '';
+        for (const [name, price] of Object.entries(staticData.wastePrices)) {
+            wasteOptions += `<option value="${name}" data-price="${price}">${name} (Rp ${price.toLocaleString('id-ID')}/kg)</option>`;
+        }
+
+        const formHTML = `
+            <div class="modal-form">
+                <label for="setorWasteType">Jenis Sampah</label>
+                <select id="setorWasteType" required>${wasteOptions}</select>
+                
+                <label for="setorWasteWeight">Berat (kg)</label>
+                <input type="number" id="setorWasteWeight" placeholder="Masukkan berat sampah (kg)" step="0.1" min="0.1" required>
+                
+                <button class="modal-btn" onclick="processSetorSampah()">Catat Setoran</button>
+            </div>
+        `;
+        showModal('🗑️', 'Setor Sampah', formHTML);
+        modalBtn.style.display = 'none'; // Hide default close button
+    };
+
+    window.processSetorSampah = async () => {
+        if (!currentUserData || !currentUserData.uid) {
+            alert("Anda harus login untuk mencatat setoran.");
+            return;
+        }
+
+        const wasteTypeSelect = document.getElementById('setorWasteType');
+        const wasteWeightInput = document.getElementById('setorWasteWeight');
+
+        const selectedWasteType = wasteTypeSelect.value;
+        const wasteWeight = parseFloat(wasteWeightInput.value);
+
+        if (!selectedWasteType || !wasteWeight || wasteWeight <= 0) {
+            alert("Mohon pilih jenis sampah dan masukkan berat yang valid.");
+            return;
+        }
+
+        const wastePricePerKg = staticData.wastePrices[selectedWasteType];
+        if (!wastePricePerKg) {
+            alert("Jenis sampah tidak valid.");
+            return;
+        }
+
+        const earnedAmount = wasteWeight * wastePricePerKg;
+        const earnedPoints = wasteWeight * staticData.pointsPerKg;
+
+        if (!confirm(`Anda akan menyetorkan ${wasteWeight} kg ${selectedWasteType}.\nEstimasi Saldo: Rp ${earnedAmount.toLocaleString('id-ID')}\nEstimasi Poin: ${earnedPoints.toLocaleString('id-ID')} Poin\n\nLanjutkan?`)) {
+            return;
+        }
+
+        try {
+            const userDocRef = doc(db, "users", currentUserData.uid);
+            
+            // Update activeDays logic
+            let newActiveDays = currentUserData.activeDays || 0;
+            let lastActiveDate = currentUserData.lastActiveDate ? currentUserData.lastActiveDate.toDate() : null;
+            const today = new Date();
+            if (!lastActiveDate || !isSameDay(lastActiveDate, today)) {
+                newActiveDays++;
+            }
+
+            const newBalance = (currentUserData.balance || 0) + earnedAmount;
+            const newPoints = (currentUserData.points || 0) + earnedPoints;
+            const newTotalWasteKg = (currentUserData.totalWasteKg || 0) + wasteWeight;
+
+            const newTransaction = {
+                type: 'setor',
+                title: `Setor Sampah: ${selectedWasteType}`,
+                detail: `${wasteWeight} kg`,
+                amount: earnedAmount,
+                timestamp: serverTimestamp(),
+            };
+
+            await updateDoc(userDocRef, {
+                balance: newBalance,
+                points: newPoints,
+                totalWasteKg: newTotalWasteKg,
+                activeDays: newActiveDays,
+                lastActiveDate: serverTimestamp(), // Update last active date to now
+                transactions: arrayUnion(newTransaction)
+            });
+
+            alert(`Setoran berhasil dicatat!`);
+            closeModal();
+            // onSnapshot akan menangani update UI
+        } catch (error) {
+            console.error("Error processing waste deposit:", error);
+            alert("Gagal mencatat setoran: " + error.message);
+        }
+    };
+
+    window.showTarikSaldo = () => {
+        if (!currentUserData) { 
+            showModal('⚠️', 'Akses Ditolak', '<p class="modal-text">Silakan login untuk melakukan penarikan saldo.</p>');
+            return; 
+        }
+
+        const formHTML = `
+            <div class="modal-form">
+                <label for="withdrawAmount">Jumlah Penarikan (Rp)</label>
+                <input type="number" id="withdrawAmount" placeholder="Min. Rp 10.000" step="1000" min="10000" required>
+                
+                <p class="modal-text" style="text-align: center; margin-top: 10px;">Saldo Anda Saat Ini: <strong>Rp ${currentUserData.balance.toLocaleString('id-ID')}</strong></p>
+
+                <button class="modal-btn" onclick="processTarikSaldo()">Tarik Saldo</button>
+            </div>
+        `;
+        showModal('💵', 'Tarik Saldo', formHTML);
+        modalBtn.style.display = 'none';
+    };
+
+    window.processTarikSaldo = async () => {
+        if (!currentUserData || !currentUserData.uid) {
+            alert("Anda harus login untuk melakukan penarikan.");
+            return;
+        }
+
+        const withdrawAmountInput = document.getElementById('withdrawAmount');
+        const amount = parseFloat(withdrawAmountInput.value);
+
+        if (isNaN(amount) || amount <= 0) {
+            alert("Jumlah penarikan tidak valid.");
+            return;
+        }
+        if (amount < 10000) {
+            alert("Jumlah penarikan minimal adalah Rp 10.000.");
+            return;
+        }
+        if (amount > currentUserData.balance) {
+            alert("Saldo Anda tidak cukup untuk penarikan ini.");
+            return;
+        }
+
+        if (!confirm(`Apakah Anda yakin ingin menarik saldo sebesar Rp ${amount.toLocaleString('id-ID')}?`)) {
+            return;
+        }
+
+        try {
+            const userDocRef = doc(db, "users", currentUserData.uid);
+            
+            // Update activeDays logic
+            let newActiveDays = currentUserData.activeDays || 0;
+            let lastActiveDate = currentUserData.lastActiveDate ? currentUserData.lastActiveDate.toDate() : null;
+            const today = new Date();
+            if (!lastActiveDate || !isSameDay(lastActiveDate, today)) {
+                newActiveDays++;
+            }
+
+            const newBalance = currentUserData.balance - amount;
+
+            const newTransaction = {
+                type: 'tarik',
+                title: `Penarikan Saldo`,
+                detail: `Tunai`, // Bisa diubah ke "Transfer Bank" dll.
+                amount: -amount, // Penarikan adalah nilai negatif
+                timestamp: serverTimestamp(),
+            };
+
+            await updateDoc(userDocRef, {
+                balance: newBalance,
+                transactions: arrayUnion(newTransaction),
+                activeDays: newActiveDays,
+                lastActiveDate: serverTimestamp() // Update last active date to now
+                            });
+
+            alert(`Penarikan berhasil dicatat!`);
+            closeModal();
+            // onSnapshot akan menangani update UI
+        } catch (error) {
+            console.error("Error processing withdrawal:", error);
+            alert("Gagal mencatat penarikan: " + error.message);
+        }
+    };
+
+
+    // ====================================================================
+    // FUNGSI LAINNYA & LEADERBOARD DINAMIS
+    // ====================================================================
     
     window.togglePasswordVisibility = (inputId) => {
         const passwordInput = document.getElementById(inputId);
@@ -557,13 +959,99 @@
     window.setActiveNav=(el)=>{document.querySelectorAll(".nav-item").forEach(item=>item.classList.remove("active"));el.classList.add("active");}
     window.showContactAdmin=()=>{const t=`<p class="modal-text">Jika Anda memiliki pertanyaan atau kendala, silakan hubungi admin kami melalui WhatsApp.</p><a href="https://wa.me/6281322355056?text=Halo%20Admin%20Bank%20Sampah%20ARAS" target="_blank" class="contact-link">💬 Hubungi via WhatsApp</a><p class="modal-text" style="font-size: 12px; text-align: center; margin-top: 15px;">Jam Operasional Admin: 08:00 - 17:00 WIB</p>`;showModal("📞","Hubungi Admin",t)}
     window.showTransfer=()=>{if(!currentUserData){alert("Silakan login untuk melakukan transfer.");return};showModal("💸","Transfer & Tarik Saldo",'<p class="modal-text">Anda dapat mentransfer saldo tabungan sampah Anda ke rekening bank atau menariknya secara tunai di lokasi Bank Sampah ARAS. Hubungi petugas untuk melakukan transaksi.</p>')}
-    window.showRincianSaldo=()=>{if(!currentUserData){alert("Silakan login untuk melihat rincian saldo.");return};let t="Ini adalah catatan keuangan lengkap Anda:\n\n";(currentUserData.transactions||[]).forEach(e=>{const o=e.amount>0?"+":"";t+=`• (${e.type}) ${o}Rp ${Math.abs(e.amount).toLocaleString("id-ID")} - ${e.title}\n`}),showModal("🧾","Rincian Saldo (Mutasi Keuangan)",`<p class="modal-text">${t}</p>`)}
+    window.showRincianSaldo=()=>{if(!currentUserData){alert("Silakan login untuk melihat rincian saldo.");return};let t="Ini adalah catatan keuangan lengkap Anda:\n\n";
+        // Sort transactions by date/timestamp descending for 'Rincian Saldo'
+        const sortedTransactions = [...(currentUserData.transactions || [])].sort((a, b) => {
+            const dateA = a.timestamp && a.timestamp.toDate ? a.timestamp.toDate() : new Date(a.date);
+            const dateB = b.timestamp && b.timestamp.toDate ? b.timestamp.toDate() : new Date(b.date);
+            return dateB.getTime() - dateA.getTime();
+        });
+
+        if (sortedTransactions.length === 0) {
+            t += "Belum ada catatan transaksi.";
+        } else {
+            sortedTransactions.forEach(e=>{
+                const o=e.amount > 0 ? "+" : "-"; // Corrected to show '-' for negative amounts
+                const displayAmount = Math.abs(e.amount).toLocaleString("id-ID");
+                const displayDate = e.timestamp && e.timestamp.toDate ? formatDate(e.timestamp.toDate()) : e.date;
+                t+=`• ${displayDate} (${e.type.charAt(0).toUpperCase() + e.type.slice(1)}) ${o}Rp ${displayAmount} - ${e.title}\n`
+            });
+        }
+        
+        showModal("🧾","Rincian Saldo (Mutasi Keuangan)",`<p class="modal-text">${t}</p>`)}
     window.showIsiSaldo=()=>{showModal("➕","Cara Mengisi Saldo",'<p class="modal-text">Saldo Anda bertambah setiap kali Anda menyetorkan sampah yang memiliki nilai jual. Semakin banyak sampah yang Anda setor, semakin besar saldo tabungan Anda!</p>')}
-    window.showActivityHistory=()=>{if(!currentUserData){alert("Silakan login untuk melihat riwayat aktivitas.");return};showModal("📊","Riwayat Aktivitas",'<p class="modal-text">Fitur riwayat aktivitas lengkap sedang dalam pengembangan.</p>')}
+    window.showActivityHistory=()=>{if(!currentUserData){alert("Silakan login untuk melihat riwayat aktivitas.");return};
+        let transactionsHtml = '<p style="text-align:center; color:#999;">Belum ada riwayat aktivitas.</p>';
+        if (currentUserData.transactions && currentUserData.transactions.length > 0) {
+            const sortedTransactions = [...currentUserData.transactions].sort((a, b) => {
+                const dateA = a.timestamp && a.timestamp.toDate ? a.timestamp.toDate() : new Date(a.date);
+                const dateB = b.timestamp && b.timestamp.toDate ? b.timestamp.toDate() : new Date(b.date);
+                return dateB.getTime() - dateA.getTime();
+            });
+            transactionsHtml = sortedTransactions.map(tx => {
+                const amountClass = tx.type;
+                const amountSign = tx.amount > 0 ? '+' : '';
+                const icon = tx.type === 'setor' ? '📥' : (tx.type === 'tarik' ? '📤' : '🎁');
+                const displayAmount = Math.abs(tx.amount).toLocaleString('id-ID');
+                const displayDate = tx.timestamp && tx.timestamp.toDate ? formatDate(tx.timestamp.toDate()) : tx.date;
+                return `<div class="transaction-item ${tx.type}"><div class="transaction-icon ${tx.type}">${icon}</div><div class="transaction-info"><div class="transaction-title">${tx.title}</div><div class="transaction-detail">${tx.detail}</div><div class="transaction-date">${displayDate}</div></div><div class="transaction-amount ${amountClass}">${amountSign}Rp ${displayAmount}</div></div>`;
+            }).join('');
+        }
+        showModal("📊","Riwayat Aktivitas",`<div id="modal-activity-list" style="max-height: 300px; overflow-y: auto;">${transactionsHtml}</div>`);
+    }
     window.showHarga=()=>{let t="Daftar harga sampah saat ini (per kg):\n\n";for(const[e,o]of Object.entries(staticData.wastePrices))t+=`• ${e}: Rp ${o.toLocaleString("id-ID")}\n`;t+="\n*Harga dapat berubah sewaktu-waktu.",showModal("💰","Daftar Harga Sampah",`<p class="modal-text">${t}</p>`)}
     window.showJadwal=()=>{showModal("📅","Jadwal Operasional",'<p class="modal-text">Bank Sampah ARAS beroperasi pada:\n\n• Hari: Selasa & Jumat\n• Jam: 08:00 - 16:00 WIB\n\nUntuk permintaan pickup, hubungi pengurus H-1.</p>')}
-    window.showPanduan=()=>{showModal("📖","Panduan Memilah Sampah",'<p class="modal-text">• KERTAS: Koran, HVS, majalah.\n• PLASTIK: Botol, gelas, & kresek.\n• LOGAM: Kaleng minuman/makanan.\n• KACA: Botol sirup, botol kecap.</p>')}
-    window.showLeaderboard=()=>{showModal("🏆","Leaderboard Nasabah",'<p class="modal-text">Peringkat setoran terbanyak bulan ini:\n\n1. Bpk. Sutisna (45.2 kg)\n2. Ibu Aisyah (41.8 kg)\n3. (Data Anda akan muncul di sini setelah login)\n\nTerus tingkatkan setoran Anda!</p>')}
+    
+    window.showLeaderboard = async () => {
+        let leaderboardHtml = '';
+        try {
+            // Query Firestore untuk mengambil pengguna, urutkan berdasarkan totalWasteKg
+            const usersRef = collection(db, "users");
+            const q = query(usersRef, orderBy("totalWasteKg", "desc"), limit(10)); // Top 10 users by total waste
+            const querySnapshot = await getDocs(q);
+
+            const leaderboardData = [];
+            querySnapshot.forEach((doc) => {
+                const data = doc.data();
+                leaderboardData.push({
+                    name: data.name,
+                    totalWasteKg: data.totalWasteKg || 0,
+                    isCurrentUser: currentUserData && doc.id === currentUserData.uid
+                });
+            });
+
+            if (leaderboardData.length === 0) {
+                leaderboardHtml = '<p class="modal-text">Belum ada data leaderboard.</p>';
+            } else {
+                leaderboardHtml += '<ul class="leaderboard-list">';
+                leaderboardData.forEach((user, index) => {
+                    const rank = index + 1;
+                    const highlightClass = user.isCurrentUser ? ' style="background-color: #e0ffe0; border-color: #2ecc71;"' : ''; // Highlight current user
+                    leaderboardHtml += `
+                        <li class="leaderboard-item"${highlightClass}>
+                            <span class="leaderboard-rank">#${rank}</span>
+                            <span class="leaderboard-name">${user.name}</span>
+                            <span class="leaderboard-value">${user.totalWasteKg.toLocaleString('id-ID', { maximumFractionDigits: 2 })} kg</span>
+                        </li>
+                    `;
+                });
+                leaderboardHtml += '</ul>';
+                
+                if (currentUserData && !leaderboardData.some(u => u.isCurrentUser)) {
+                    // If current user is not in top 10, display their own rank separately
+                    leaderboardHtml += `<p class="leaderboard-note">Anda belum masuk Top 10. Terus setorkan sampah Anda! (<span style="font-weight: bold;">Anda: ${currentUserData.totalWasteKg.toLocaleString('id-ID', { maximumFractionDigits: 2 })} kg</span>)</p>`;
+                } else if (!currentUserData) {
+                    leaderboardHtml += `<p class="leaderboard-note">Login untuk melihat peringkat Anda.</p>`;
+                }
+            }
+
+            showModal("🏆","Leaderboard Nasabah", leaderboardHtml);
+
+        } catch (error) {
+            console.error("Error fetching leaderboard data:", error);
+            showModal("⚠️","Gagal Memuat Leaderboard", '<p class="modal-text">Terjadi kesalahan saat memuat data leaderboard. Silakan coba lagi nanti.</p>');
+        }
+    };
     
     // ====================================================================
     // INISIALISASI APLIKASI
